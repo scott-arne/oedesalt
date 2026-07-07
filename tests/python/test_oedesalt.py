@@ -136,3 +136,39 @@ def test_errors_share_base_class(tmp_path):
 
     with pytest.raises(oedesalt.OEDesaltError):
         oedesalt.Desalter(salt_file="/no/such/file.smarts")
+
+
+def test_macos_skips_openeye_preload_without_version_drift():
+    """On macOS with no version drift, importing oedesalt must not eagerly
+    preload the OpenEye libraries.
+
+    The extension resolves its OpenEye dependencies through its own absolute
+    LC_RPATH, so an eager RTLD_GLOBAL preload at import time is unnecessary and
+    perturbs process-global load order -- which can tip order-sensitive
+    conflicts with other OpenMP-linked extensions (scikit-learn, PyTorch) into a
+    hard abort(). This guards that _preload_shared_libs issues no library loads
+    in that case. See BUG_REPORT_openmp_abort.md.
+    """
+    import sys
+
+    import pytest
+
+    if sys.platform != "darwin":
+        pytest.skip("preload-skip behavior is macOS-specific")
+
+    import ctypes
+
+    import oedesalt
+
+    # No version drift in a normal environment: the drift signal is unset.
+    assert oedesalt._OPENEYE_COMPAT_EXTENSION_DIR is None
+
+    calls = []
+    original_cdll = ctypes.CDLL
+    try:
+        ctypes.CDLL = lambda *a, **k: calls.append((a, k))  # type: ignore[assignment]
+        oedesalt._preload_shared_libs()
+    finally:
+        ctypes.CDLL = original_cdll
+
+    assert calls == [], f"expected no preload CDLL calls on macOS, got {calls}"

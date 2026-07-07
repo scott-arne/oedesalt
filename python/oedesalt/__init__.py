@@ -421,19 +421,49 @@ def _preload_shared_libs():
 
     On Linux, the extension's RUNPATH (set at build time) normally handles
     dependency resolution, but preloading ensures libraries are available
-    even if RUNPATH is stripped (e.g. by certain packaging tools).
-    On macOS, @rpath references may not resolve without preloading.
+    even if RUNPATH is stripped (e.g. by certain packaging tools). The
+    libraries are loaded with ``RTLD_GLOBAL`` so that C++ symbol references
+    shared across the separate OpenEye extension modules resolve correctly.
+    Only the libraries recorded in ``OPENEYE_EXPECTED_LIBS`` are loaded;
+    loading the entire OpenEye library directory (70+ shared objects) would
+    pollute the global symbol namespace and cause segfaults in unrelated C
+    extensions such as ``_sqlite3``.
 
-    Only the libraries recorded in ``OPENEYE_EXPECTED_LIBS`` are loaded,
-    and they are loaded with ``RTLD_GLOBAL`` so that cross-module C++
-    symbol references resolve correctly. Loading the entire OpenEye
-    library directory (which can contain 70+ unrelated shared objects)
-    would pollute the global symbol namespace and cause segfaults in
-    unrelated C extensions such as ``_sqlite3``.
+    On macOS this blanket preload is deliberately skipped. The extension
+    carries an absolute ``LC_RPATH`` into the OpenEye library directory, so
+    dyld resolves its dependencies without any preload, and the OpenEye
+    Python package manages its own cross-module symbols. An eager
+    ``RTLD_GLOBAL`` load here is therefore unnecessary and actively harmful:
+    it forces a large native stack into the global namespace at import time
+    and perturbs process-global load order, which can tip order-sensitive
+    conflicts between other OpenMP-linked extensions (scikit-learn, PyTorch)
+    into a hard ``abort()``. Only the version-drift compatibility aliases,
+    when present, are preloaded on macOS -- and with ``RTLD_LOCAL`` so the
+    global namespace stays clean; the relocated cached extension resolves the
+    aliased names through its own rpath regardless.
     """
     import ctypes
     import sys
-    if sys.platform not in ('linux', 'darwin'):
+
+    if sys.platform == 'darwin':
+        # In the normal case the extension resolves every OpenEye dependency
+        # through its own absolute LC_RPATH, so no preload is needed and none
+        # is done -- avoiding the load-order perturbation described above.
+        # Only when version drift forced the extension to be relocated to the
+        # cache (signalled by _OPENEYE_COMPAT_EXTENSION_DIR) do the aliased
+        # libraries need warming, and then RTLD_LOCAL keeps the global
+        # namespace clean.
+        if _OPENEYE_COMPAT_EXTENSION_DIR is None:
+            return
+        for path in _OPENEYE_COMPAT_PRELOAD_PATHS:
+            if os.path.exists(path) or os.path.islink(path):
+                try:
+                    ctypes.CDLL(path, mode=ctypes.RTLD_LOCAL)
+                except OSError:
+                    pass
+        return
+
+    if sys.platform != 'linux':
         return
 
     try:
