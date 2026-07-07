@@ -1,307 +1,193 @@
 # OEDesalt
 
-A small desalting utility using the OpenEye Toolkits
+A small, fast salt and solvent remover for [OpenEye Toolkits](https://www.eyesopen.com/)
+molecules, available as both a C++ library and a Python package.
 
-This project provides a C++ library with Python bindings built using SWIG and
-[OpenEye Toolkits](https://www.eyesopen.com/). Molecules created with
-`openeye.oechem` in Python pass natively to C++ without serialization.
-
-## Prerequisites
-
-- **OpenEye C++ SDK** -- Headers and libraries (download from
-  [OpenEye](https://www.eyesopen.com/))
-- **OpenEye Python Toolkits** -- `pip install openeye-toolkits`
-- **CMake** >= 3.16
-- **SWIG** >= 4.0
-- **Python** >= 3.10
-
-## Getting Started
-
-### 1. Configure the OpenEye SDK Path
-
-Set the `OPENEYE_ROOT` environment variable to point to your OpenEye C++ SDK
-installation (the directory containing `include/` and `lib/`):
-
-```bash
-export OPENEYE_ROOT=/path/to/openeye/sdk
-```
-
-The CMake presets read this variable automatically. You can also set
-`Python3_EXECUTABLE` if you need a specific Python interpreter.
-
-Alternatively, create a `CMakeUserPresets.json` (gitignored) to override
-these values permanently for your local machine.
-
-### 2. Build the C++ Library and SWIG Bindings
-
-```bash
-cmake --preset debug
-cmake --build build-debug
-```
-
-This builds the static C++ library, generates the SWIG wrapper, and places the
-compiled Python extension module in `python/oedesalt/`.
-
-To build in release mode:
-
-```bash
-cmake --preset release
-cmake --build build-release
-```
-
-### 3. Install for Development
-
-Install the Python package in editable mode so changes to the C++ code are
-reflected after rebuilding:
-
-```bash
-pip install --config-settings editable_mode=compat -e python/
-```
-
-The `editable_mode=compat` flag is required because scikit-build-core's default
-editable mode uses import hooks that are incompatible with compiled SWIG
-extension modules. The compat mode installs the package as a traditional
-`.egg-link`, which works reliably with native extensions.
-
-### 4. Run Tests
-
-C++ tests (built automatically with the debug preset):
-
-```bash
-cd build-debug && ctest --output-on-failure
-```
-
-Python tests:
-
-```bash
-pytest tests/python/ -v
-```
-
-The Python tests verify that molecules created with `openeye.oechem.OEGraphMol`
-pass correctly to the C++ API.
-
-## Usage
+Many structures arrive as a drug plus a counterion, salt, or crystallization
+solvent — `aspirin.HCl`, `amine.oxalic acid`, `drug.water`. OEDesalt strips those
+extra components and leaves the compound of interest, using a curated set of
+salt/solvent patterns that are compiled into the library (no data files to ship
+or configure).
 
 ```python
 from openeye import oechem
 from oedesalt import Desalter
 
-# A bare Desalter() uses the salt patterns compiled into the library —
-# no data files needed. Solvent stripping is opt-in.
-desalter = Desalter()
-
 mol = oechem.OEGraphMol()
-oechem.OESmilesToMol(mol, "CC(=O)Oc1ccccc1C(=O)O.Cl")  # aspirin . HCl
+oechem.OESmilesToMol(mol, "CC(=O)Oc1ccccc1C(=O)O.Cl")   # aspirin . HCl
 
-result = desalter.desalt(mol)
-print(oechem.OEMolToSmiles(result.mol))   # aspirin, counterion removed
+result = Desalter().desalt(mol)
+print(oechem.OEMolToSmiles(result.mol))   # CC(=O)Oc1ccccc1C(=O)O  (aspirin)
 print(result.stripped_names)              # ['Halides']
 ```
 
-`Desalter` is immutable — configure it once in the constructor:
+## How it works
 
-```python
-Desalter()                          # bundled salts, solvents off (default)
-Desalter(strip_solvents=True)       # also strip bundled solvents (water, etc.)
-Desalter(aggressive=True)           # strip salt-formers from single-component inputs too
-Desalter(salt_file="my_salts.smarts")               # custom salt patterns
-Desalter(salt_file="my.smarts", solvent_file="s.smarts")  # custom both
+- **Whole-fragment matching.** A disconnected component is removed only if a
+  pattern matches the *entire* fragment. A covalently bound chlorine on your
+  molecule is never mistaken for a chloride counterion.
+- **Charge-agnostic.** `[Na]` matches `Na+`, `C(=O)O` matches a carboxylate, and
+  so on — you don't need charged input.
+- **Solvents are opt-in.** By default only salts/counterions are removed. Water
+  and other crystallization solvents are kept unless you ask for them
+  (`strip_solvents=True`).
+- **Single-component inputs are left alone.** A lone molecule that happens to
+  look like a salt-former (pyridine, a fatty acid) is the compound of interest,
+  not a salt, so it is returned untouched — unless you opt into `aggressive` mode.
+- **Pure removal.** Components are deleted; nothing is neutralized or re-protonated,
+  and the molecule title is preserved.
+
+## Requirements
+
+- **OpenEye Toolkits** with a valid license (`OE_LICENSE`). The Python package
+  depends on `openeye-toolkits`; the C++ library needs the OpenEye C++ SDK.
+- **Python** ≥ 3.10 (for the Python package).
+- **C++17** and **CMake** ≥ 3.16 (for the C++ library).
+
+## Python
+
+### Install
+
+```bash
+pip install oedesalt
 ```
 
-`desalt(mol)` returns a `DesaltResult` with `.mol` (the surviving molecule,
-empty if everything matched) and `.stripped_names` (the patterns that removed a
-component). A single-component molecule is returned untouched unless
-`aggressive=True`, because a lone salt-former is the compound of interest, not a
-salt.
+This pulls in `openeye-toolkits` automatically. Make sure your OpenEye license is
+available at runtime (for example, `export OE_LICENSE=/path/to/oe_license.txt`).
 
-Bad pattern files raise typed errors: `PatternFileError` (file cannot be opened)
-and `InvalidPatternError` (malformed SMARTS), both subclasses of `OEDesaltError`.
+### Usage
 
-### C++
+Build a `Desalter` once and reuse it — it is immutable and cheap to construct.
+Pass any `openeye.oechem` molecule to `desalt()`:
+
+```python
+from openeye import oechem
+from oedesalt import Desalter
+
+desalter = Desalter()
+
+mol = oechem.OEGraphMol()
+oechem.OESmilesToMol(mol, "c1ccncc1C(=O)NC.Cl.[Na]")
+
+result = desalter.desalt(mol)
+result.mol             # the surviving molecule (an OEGraphMol)
+result.stripped_names  # e.g. ['Halides', 'Alkali metals'] — patterns that removed a component
+```
+
+`desalt()` returns a `DesaltResult` with two attributes:
+
+- `mol` — the surviving molecule. It is empty if *every* component matched a
+  pattern (for example, desalting plain `[Na].Cl`).
+- `stripped_names` — the display names of the patterns that removed a component.
+  Empty when nothing was stripped.
+
+### Configuration
+
+Everything is set on the constructor:
+
+```python
+Desalter()                             # bundled salts; solvents left in place (default)
+Desalter(strip_solvents=True)          # also strip bundled solvents (water, etc.)
+Desalter(aggressive=True)              # strip salt-formers from single-component inputs too
+Desalter(salt_file="my_salts.smarts")  # use your own salt patterns instead of the bundled set
+Desalter(salt_file="my_salts.smarts", solvent_file="my_solvents.smarts")  # custom both
+```
+
+Notes:
+
+- Passing a `solvent_file` implies `strip_solvents=True`.
+- `strip_solvents=True` with no `solvent_file` uses the bundled solvent set.
+- `aggressive=True` desalts single-component inputs, which can empty the molecule
+  entirely if the whole thing matches a pattern — use it deliberately.
+
+### Errors
+
+Loading a bad pattern file raises a typed exception, all subclasses of
+`OEDesaltError`:
+
+```python
+from oedesalt import Desalter, PatternFileError, InvalidPatternError, OEDesaltError
+
+try:
+    Desalter(salt_file="does_not_exist.smarts")
+except PatternFileError:      # file could not be opened
+    ...
+except InvalidPatternError:   # a SMARTS line failed to parse
+    ...
+```
+
+## C++
+
+### Consuming the library
+
+OEDesalt installs a static library, its headers, and a CMake targets file. The
+`OEDESALT::oedesalt` target expects OpenEye to be available in your build, which
+is provided by the [`cmake-openeye`](https://github.com/scott-arne/cmake-openeye)
+helper.
+
+```cmake
+cmake_minimum_required(VERSION 3.16)
+project(my_app LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+
+# Provide find_package(OpenEye) via the cmake-openeye helper.
+include(FetchContent)
+FetchContent_Declare(cmake_openeye
+    GIT_REPOSITORY https://github.com/scott-arne/cmake-openeye.git
+    GIT_TAG v1.2.1 GIT_SHALLOW TRUE)
+FetchContent_MakeAvailable(cmake_openeye)
+list(APPEND CMAKE_MODULE_PATH "${cmake_openeye_SOURCE_DIR}")
+find_package(OpenEye REQUIRED)
+
+# Import the installed oedesalt target.
+include(<install-prefix>/lib/cmake/oedesalt/OEDESALTTargets.cmake)
+
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE OEDESALT::oedesalt OpenEye::OEChem)
+```
+
+Configure with `-DOPENEYE_ROOT=/path/to/openeye/sdk` so `find_package(OpenEye)`
+can locate the SDK.
+
+### Usage
 
 ```cpp
 #include "oedesalt/Desalter.h"
+#include <oechem.h>
 
-// Build from the patterns compiled into the library — no file needed.
+OEChem::OEGraphMol mol;
+OEChem::OESmilesToMol(mol, "CC(=O)Oc1ccccc1C(=O)O.Cl");   // aspirin . HCl
+
+// Build from the patterns compiled into the library — no data files needed.
 const OEDESALT::Desalter desalter = OEDESALT::Desalter::WithBundledPatterns();
 const OEDESALT::DesaltResult result = desalter.Desalt(mol);
-// result.mol            -> surviving molecule
-// result.stripped_names -> names of removed salt/solvent patterns
+
+result.mol;              // surviving molecule (empty if everything matched)
+result.stripped_names;   // std::vector<std::string> of removed pattern names
 ```
 
-## Project Structure
+`WithBundledPatterns(strip_solvents = false, aggressive = false)` mirrors the
+Python constructor. To load your own patterns from files, use
+`OEDESALT::Desalter::FromFiles(salt_path, solvent_path = "", aggressive = false)`.
+Pattern-file problems throw `OEDESALT::PatternFileError` or
+`OEDESALT::InvalidPatternError` (both derive from `OEDESALT::OEDesaltError`).
 
-```
-oedesalt/
-    CMakeLists.txt                  # Build configuration
-    CMakePresets.json               # CMake presets (copy to CMakeUserPresets.json)
-    pyproject.toml                  # Package metadata + [tool.oe-build] config
-    vrzn.toml                       # Version locations for vrzn
-    include/oedesalt/
-        oedesalt.h               # Public C++ header
-        Desalter.h               # Desalter class definition
-        Error.h                  # Error types (OEDesaltError, etc.)
-        BundledPatterns.h        # Embedded pattern constants
-    src/
-        Desalter.cpp             # Desalter implementation
-    swig/
-        oedesalt.i               # SWIG interface with OEMolBase typemaps
-        CMakeLists.txt              # SWIG module build rules
-    python/
-        pyproject.toml              # Setuptools config for editable installs
-        oedesalt/
-            __init__.py             # Python package (imports, compat layer)
-            data/
-                salts.smarts        # Default salt patterns
-                solvents.smarts     # Default solvent patterns
-    scripts/
-        build_python.py             # Build distributable wheels
-        generate_bundled_patterns.py # Codegen: embeds SMARTS patterns in C++
-    tests/
-        cpp/
-            CMakeLists.txt          # C++ test build rules
-            test_desalter.cpp    # C++ unit tests
-        python/
-            conftest.py             # Pytest fixtures (molecule helpers)
-            test_oedesalt.py      # Python tests
-    .github/workflows/
-        build-wheels.yml            # CI: multi-platform wheel builds
+## Custom pattern files
+
+Both APIs accept your own pattern files in a simple RDKit-style format: one
+pattern per line, a SMARTS token followed by a display name. Lines starting with
+`//` or `#`, and blank lines, are ignored.
+
+```text
+// my_salts.smarts
+[F,Cl,Br,I]        Halides
+[Li,Na,K,Rb,Cs]    Alkali metals
+C(=O)O             Carboxylate counterion
 ```
 
-## Salt & Solvent Patterns
-
-The default patterns live in two RDKit-format SMARTS files:
-
-- `python/oedesalt/data/salts.smarts` — counterions, salts, and salt-former bases.
-- `python/oedesalt/data/solvents.smarts` — crystallization solvents and water (opt-in).
-
-These files are the single source of truth. At build time,
-`scripts/generate_bundled_patterns.py` embeds them into the C++ library as
-string constants (reached via `Desalter::WithBundledPatterns`), and the same
-files are shipped in the wheel for the file-override code paths. Editing a
-`.smarts` file and rebuilding regenerates the embedded copy automatically.
-
-Each non-comment line is a SMARTS pattern followed by a display name; lines
-starting with `//` or `#` are comments. Patterns use a whole-fragment,
-charge-agnostic match, so do not encode formal charges.
-
-## Building Wheels
-
-### Local Build
-
-The `scripts/build_python.py` script builds a distributable wheel. It reads
-project-specific settings from the `[tool.oe-build]` section of `pyproject.toml`,
-so the script itself never needs modification.
-
-```bash
-python scripts/build_python.py --openeye-root /path/to/openeye/sdk --verbose
-```
-
-The built wheel will be placed in `dist/`. On macOS, the script automatically
-runs `delocate` to bundle non-OpenEye dependencies and sets the correct RPATH
-for OpenEye shared libraries.
-
-Options:
-
-```
---openeye-root PATH    Path to OpenEye C++ SDK (or set OPENEYE_ROOT env var)
---python PATH          Python executable to use
---clean                Clean dist/ before building
---upload               Upload to PyPI after building
---test-upload          Upload to TestPyPI instead
---verbose              Show build commands
-```
-
-If `--openeye-root` is not provided, the script checks the `OPENEYE_ROOT`
-environment variable and then `CMakePresets.json` / `CMakeUserPresets.json`.
-
-### CI Builds
-
-The included GitHub Actions workflow (`.github/workflows/build-wheels.yml`)
-builds wheels on:
-
-- Linux x86_64 (Rocky Linux 8, manylinux_2_28)
-- Linux aarch64 (Rocky Linux 9, manylinux_2_34)
-- macOS arm64 (universal2)
-
-It triggers on version tags (`v*`) and `workflow_dispatch`. Wheels are published
-to PyPI via trusted publishing on tag pushes.
-
-**Required GitHub Variables** (configured in Settings > Variables > Actions):
-
-| Variable | Example | Description |
-|----------|---------|-------------|
-| `OPENEYE_VERSION` | `2025.2.1` | OpenEye SDK version for CI |
-| `SDK_BUCKET` | `openeye-sdks` | Cloud storage bucket name |
-| `SDK_LINUX_X86_64` | `OpenEye-toolkits-...-x64.tar.gz` | Linux x86_64 SDK filename |
-| `SDK_LINUX_AARCH64` | `OpenEye-toolkits-...-aarch64.tar.gz` | Linux aarch64 SDK filename |
-| `SDK_MACOS` | `OpenEye-toolkits-...-universal.tar.gz` | macOS SDK filename |
-
-**Required GitHub Secrets:**
-
-| Secret | Description |
-|--------|-------------|
-| `GCP_WORKLOAD_IDENTITY_PROVIDER` | GCP Workload Identity Federation provider |
-| `GCP_SERVICE_ACCOUNT` | GCP service account for SDK downloads |
-
-The OpenEye C++ SDK and license file are downloaded from a GCS bucket
-(`SDK_BUCKET`) during CI.
-
-## CMake Options
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `OEDESALT_BUILD_TESTS` | ON | Build C++ tests |
-| `OEDESALT_BUILD_PYTHON` | ON | Build Python SWIG bindings |
-| `OEDESALT_UNIVERSAL2` | OFF | Build macOS universal2 binary |
-| `OEDESALT_USE_STABLE_ABI` | ON | Use Python stable ABI (abi3) |
-
-## Tools
-
-This project uses several tools to manage the build, packaging, and versioning:
-
-| Tool | Purpose |
-|------|---------|
-| [CMake](https://cmake.org/) | Build system for the C++ library and SWIG bindings |
-| [SWIG](https://www.swig.org/) | Generates Python bindings from C++ headers |
-| [scikit-build-core](https://scikit-build-core.readthedocs.io/) | Python build backend that delegates to CMake |
-| [cmake-openeye](https://github.com/scott-arne/cmake-openeye) | CMake modules for finding the OpenEye SDK and building SWIG targets |
-| [vrzn](https://github.com/scott-arne/vrzn) | Keeps version numbers in sync across all project files |
-| [delocate](https://github.com/matthew-brett/delocate) | Bundles shared libraries into macOS wheels |
-| [auditwheel](https://github.com/pypa/auditwheel) | Bundles shared libraries into Linux wheels |
-| [pytest](https://docs.pytest.org/) | Test framework for the Python test suite |
-
-## Version Management
-
-This project uses [vrzn](https://github.com/scott-arne/vrzn) to keep version
-numbers consistent across all project files. The `vrzn.toml` configuration
-tracks seven version locations:
-
-| File | Location Type |
-|------|---------------|
-| `pyproject.toml` | `[project] version` |
-| `python/pyproject.toml` | `[project] version` |
-| `python/oedesalt/__init__.py` | `__version__` |
-| `python/oedesalt/__init__.py` | `__version_info__` |
-| `CMakeLists.txt` | `project(... VERSION ...)` |
-| `include/oedesalt/oedesalt.h` | `#define` version macros |
-| `swig/oedesalt.i` | `#define` version macros |
-
-Common commands:
-
-```bash
-vrzn get          # Show current version in all tracked locations
-vrzn bump patch   # Bump patch version (e.g. 0.1.0 -> 0.1.1)
-vrzn bump minor   # Bump minor version (e.g. 0.1.0 -> 0.2.0)
-vrzn set 1.0.0    # Set an explicit version everywhere
-```
-
-Install vrzn with:
-
-```bash
-pip install vrzn
-```
+Patterns use whole-fragment, charge-agnostic matching, so **do not** encode
+formal charges — write `[Na]`, not `[Na+]`.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
