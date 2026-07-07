@@ -12,3 +12,9 @@ openeye_add_swig_module(
         OEMATH_LIBRARY OEZSTD_LIBRARY
     INIT_PY ${CMAKE_SOURCE_DIR}/python/oedesalt/__init__.py
 )
+
+install(FILES
+    ${CMAKE_SOURCE_DIR}/python/oedesalt/data/salts.smarts
+    ${CMAKE_SOURCE_DIR}/python/oedesalt/data/solvents.smarts
+    DESTINATION oedesalt/data
+)

@@ -556,6 +556,8 @@ _preload_bundled_libs()
 _load_cached_extension_if_needed()
 _check_openeye_version()
 
+from importlib import resources
+
 from .oedesalt import (
     Desalter as _RawDesalter,
     OEDesaltError,
@@ -563,9 +565,110 @@ from .oedesalt import (
     InvalidPatternError,
 )
 
+
+def _bundled_data_path(name):
+    """Resolve a bundled data file path under ``oedesalt/data``.
+
+    :param name: File name, e.g. ``"salts.smarts"``.
+    :returns: Filesystem path as a string.
+    """
+    return str(resources.files("oedesalt").joinpath("data", name))
+
+
+class DesaltResult:
+    """Outcome of desalting a molecule.
+
+    :ivar mol: The surviving molecule (an empty molecule when every component
+        matched a salt/solvent pattern).
+    :ivar stripped_names: Names of the patterns that removed a component.
+    """
+
+    __slots__ = ("mol", "stripped_names")
+
+    def __init__(self, mol, stripped_names):
+        self.mol = mol
+        self.stripped_names = stripped_names
+
+    def __repr__(self):
+        return (
+            f"DesaltResult(stripped_names={self.stripped_names!r}, "
+            f"mol=<{type(self.mol).__name__}>)"
+        )
+
+
+class Desalter:
+    """Immutable salt/solvent remover.
+
+    A bare ``Desalter()`` uses the patterns compiled into the C++ library, so
+    the common case needs no data files. Passing ``salt_file`` and/or
+    ``solvent_file`` loads patterns from those files instead. The object is
+    configured once at construction and never mutated; it is cheap to build, so
+    construct a new one to change settings.
+
+    :param salt_file: Path to a salt pattern file, or ``None`` for the bundled
+        salts.
+    :param solvent_file: Path to a solvent pattern file, or ``None``. Passing a
+        path implies ``strip_solvents=True``.
+    :param strip_solvents: Also strip solvent components. Default ``False``,
+        matching the deliberate scientific caution around removing solvates.
+    :param aggressive: Strip matching components even from single-component
+        inputs (which can wholly empty the molecule). Default ``False``.
+    :raises PatternFileError: If a given pattern file cannot be opened.
+    :raises InvalidPatternError: If a pattern file has a malformed SMARTS line.
+    """
+
+    def __init__(self, salt_file=None, solvent_file=None,
+                 strip_solvents=False, aggressive=False):
+        effective_strip_solvents = strip_solvents or (solvent_file is not None)
+
+        if salt_file is None and solvent_file is None:
+            raw = _RawDesalter.WithBundledPatterns(effective_strip_solvents, aggressive)
+        else:
+            salt_path = str(salt_file) if salt_file is not None else _bundled_data_path("salts.smarts")
+            if solvent_file is not None:
+                solvent_path = str(solvent_file)
+            elif effective_strip_solvents:
+                solvent_path = _bundled_data_path("solvents.smarts")
+            else:
+                solvent_path = ""
+            raw = _RawDesalter.FromFiles(salt_path, solvent_path, aggressive)
+
+        # Set once; the object is treated as immutable thereafter.
+        object.__setattr__(self, "_raw", raw)
+        object.__setattr__(self, "_aggressive", bool(aggressive))
+
+    def __setattr__(self, name, value):
+        raise AttributeError("Desalter is immutable; construct a new one to change settings")
+
+    def desalt(self, mol):
+        """Desalt a molecule.
+
+        :param mol: An ``openeye.oechem`` molecule.
+        :returns: A :class:`DesaltResult` with the surviving molecule and the
+            names of the patterns that stripped a component.
+        """
+        from openeye import oechem
+
+        out = oechem.OEGraphMol()
+        names = self._raw.DesaltInto(mol, out)
+        return DesaltResult(mol=out, stripped_names=list(names))
+
+    @property
+    def pattern_count(self):
+        """Number of loaded salt/solvent patterns."""
+        return self._raw.PatternCount()
+
+    @property
+    def aggressive(self):
+        """Whether single-component inputs are desalted."""
+        return self._aggressive
+
+
 __all__ = [
     "__version__",
     "__version_info__",
+    "Desalter",
+    "DesaltResult",
     "OEDesaltError",
     "PatternFileError",
     "InvalidPatternError",

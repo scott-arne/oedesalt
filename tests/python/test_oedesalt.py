@@ -1,45 +1,138 @@
-"""Tests for oedesalt Python bindings."""
+"""Tests for the oedesalt Python facade."""
 
-import pytest
+from openeye import oechem
 
 
-class TestCalculateMolecularWeight:
-    """Test the calculate_molecular_weight function with native molecule passing."""
+def _smiles(mol):
+    return oechem.OEMolToSmiles(mol)
 
-    def test_aspirin_molecular_weight(self, aspirin_mol):
-        """Verify molecular weight calculation for aspirin (C9H8O4 ~ 180.16)."""
-        from oedesalt import calculate_molecular_weight
-        mw = calculate_molecular_weight(aspirin_mol)
-        assert pytest.approx(mw, rel=1e-3) == 180.157
 
-    def test_ethanol_molecular_weight(self, ethanol_mol):
-        """Verify molecular weight calculation for ethanol (C2H6O ~ 46.07)."""
-        from oedesalt import calculate_molecular_weight
-        mw = calculate_molecular_weight(ethanol_mol)
-        assert pytest.approx(mw, rel=1e-3) == 46.069
+def test_version_available():
+    import oedesalt
 
-    def test_native_molecule_passing(self, aspirin_mol):
-        """Verify that OEGraphMol from openeye.oechem passes to C++ without serialization.
+    assert hasattr(oedesalt, "__version__")
+    assert hasattr(oedesalt, "__version_info__")
+    assert oedesalt.__version__ == "0.1.0"
+    assert oedesalt.__version_info__ == (0, 1, 0)
 
-        This test confirms the cross-SWIG-runtime typemap works: the molecule
-        object created by openeye.oechem (SWIG v4) is accepted by our module
-        (SWIG v5) without needing SMILES serialization.
-        """
-        from oedesalt import calculate_molecular_weight
-        result = calculate_molecular_weight(aspirin_mol)
-        assert isinstance(result, float)
-        assert result > 0
 
-    def test_rejects_non_molecule(self):
-        """Verify that passing a non-molecule object raises TypeError."""
-        from oedesalt import calculate_molecular_weight
-        with pytest.raises(TypeError):
-            calculate_molecular_weight("not a molecule")
+def test_bare_desalter_strips_halide(aspirin_hcl_mol):
+    import oedesalt
 
-    def test_version_available(self):
-        """Verify version info is accessible."""
-        import oedesalt
-        assert hasattr(oedesalt, '__version__')
-        assert hasattr(oedesalt, '__version_info__')
-        assert oedesalt.__version__ == "0.1.0"
-        assert oedesalt.__version_info__ == (0, 1, 0)
+    result = oedesalt.Desalter().desalt(aspirin_hcl_mol)
+    assert "Halides" in result.stripped_names
+    assert "." not in _smiles(result.mol)
+
+
+def test_desalt_returns_result_object(aspirin_hcl_mol):
+    import oedesalt
+
+    result = oedesalt.Desalter().desalt(aspirin_hcl_mol)
+    assert isinstance(result, oedesalt.DesaltResult)
+    assert isinstance(result.mol, oechem.OEMolBase)
+    assert isinstance(result.stripped_names, list)
+
+
+def test_solvents_off_by_default(drug_water_mol):
+    import oedesalt
+
+    # Bare Desalter() must NOT strip the water component, and must strip nothing.
+    result = oedesalt.Desalter().desalt(drug_water_mol)
+    assert "." in _smiles(result.mol)
+    assert result.stripped_names == []
+
+
+def test_strip_solvents_removes_water(drug_water_mol):
+    import oedesalt
+
+    result = oedesalt.Desalter(strip_solvents=True).desalt(drug_water_mol)
+    assert "." not in _smiles(result.mol)
+
+
+def test_single_component_salt_former_survives_by_default(pyridine_mol):
+    import oedesalt
+
+    result = oedesalt.Desalter().desalt(pyridine_mol)
+    assert result.stripped_names == []
+    assert _smiles(result.mol) == _smiles(pyridine_mol)
+
+
+def test_aggressive_strips_single_component_salt_former(pyridine_mol):
+    import oedesalt
+
+    result = oedesalt.Desalter(aggressive=True).desalt(pyridine_mol)
+    # Pyridine matches a bundled pattern; aggressive empties the molecule.
+    assert result.mol.NumAtoms() == 0
+    assert result.stripped_names
+
+
+def test_pattern_count_and_aggressive_properties():
+    import oedesalt
+
+    salts_only = oedesalt.Desalter()
+    with_solvents = oedesalt.Desalter(strip_solvents=True)
+    assert salts_only.pattern_count > 0
+    assert with_solvents.pattern_count > salts_only.pattern_count
+    assert oedesalt.Desalter(aggressive=True).aggressive is True
+    assert salts_only.aggressive is False
+
+
+def test_immutable_facade():
+    import oedesalt
+
+    import pytest
+
+    d = oedesalt.Desalter()
+    with pytest.raises(AttributeError):
+        d.aggressive = True
+
+
+def test_custom_salt_file_override(tmp_path, mol_factory):
+    import oedesalt
+
+    salt_file = tmp_path / "mini.smarts"
+    salt_file.write_text("[F,Cl,Br,I]   Halides\n", encoding="utf-8")
+    result = oedesalt.Desalter(salt_file=salt_file).desalt(
+        mol_factory("CC(=O)Oc1ccccc1C(=O)O.Cl")
+    )
+    assert "Halides" in result.stripped_names
+
+
+def test_custom_salt_file_with_bundled_solvents(tmp_path, drug_water_mol):
+    import oedesalt
+
+    # Custom salts + strip_solvents=True (no solvent_file) must still pull in the
+    # bundled solvents and strip the water.
+    salt_file = tmp_path / "mini.smarts"
+    salt_file.write_text("[F,Cl,Br,I]   Halides\n", encoding="utf-8")
+    result = oedesalt.Desalter(salt_file=salt_file, strip_solvents=True).desalt(drug_water_mol)
+    assert "." not in _smiles(result.mol)
+
+
+def test_missing_file_raises_pattern_file_error():
+    import oedesalt
+
+    import pytest
+
+    with pytest.raises(oedesalt.PatternFileError):
+        oedesalt.Desalter(salt_file="/no/such/file.smarts")
+
+
+def test_malformed_smarts_raises_invalid_pattern_error(tmp_path):
+    import oedesalt
+
+    import pytest
+
+    bad = tmp_path / "bad.smarts"
+    bad.write_text("[Cl   Halide\n", encoding="utf-8")
+    with pytest.raises(oedesalt.InvalidPatternError):
+        oedesalt.Desalter(salt_file=bad)
+
+
+def test_errors_share_base_class(tmp_path):
+    import oedesalt
+
+    import pytest
+
+    with pytest.raises(oedesalt.OEDesaltError):
+        oedesalt.Desalter(salt_file="/no/such/file.smarts")
