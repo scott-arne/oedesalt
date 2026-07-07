@@ -4,10 +4,34 @@
 
 %{
 #include "oedesalt/oedesalt.h"
+#include "oedesalt/Desalter.h"
+#include "oedesalt/Error.h"
 #include <oechem.h>
 #include <oegrid.h>
 
 using namespace OEDESALT;
+
+// Python exception classes, populated at module import via the %pythoncode
+// call to _install_exception_types below, and read by the %exception handler.
+static PyObject* _oedesalt_py_OEDesaltError      = nullptr;
+static PyObject* _oedesalt_py_PatternFileError   = nullptr;
+static PyObject* _oedesalt_py_InvalidPatternError = nullptr;
+
+static void _oedesalt_set_exception_types(PyObject* base,
+                                          PyObject* file_err,
+                                          PyObject* pattern_err) {
+    Py_XINCREF(base);        _oedesalt_py_OEDesaltError       = base;
+    Py_XINCREF(file_err);    _oedesalt_py_PatternFileError    = file_err;
+    Py_XINCREF(pattern_err); _oedesalt_py_InvalidPatternError = pattern_err;
+}
+%}
+
+%inline %{
+void _install_exception_types(PyObject* base,
+                              PyObject* file_err,
+                              PyObject* pattern_err) {
+    _oedesalt_set_exception_types(base, file_err, pattern_err);
+}
 %}
 
 // ============================================================================
@@ -355,6 +379,9 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oedesalt_is_oereceptor, "E
 %include "std_string.i"
 %include "stdint.i"
 %include "exception.i"
+%include "std_vector.i"
+
+%template(StringVector) std::vector<std::string>;
 
 // ============================================================================
 // Exception handling
@@ -362,6 +389,15 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oedesalt_is_oereceptor, "E
 %exception {
     try {
         $action
+    } catch (const OEDESALT::PatternFileError& e) {
+        PyErr_SetString(_oedesalt_py_PatternFileError, e.what());
+        SWIG_fail;
+    } catch (const OEDESALT::InvalidPatternError& e) {
+        PyErr_SetString(_oedesalt_py_InvalidPatternError, e.what());
+        SWIG_fail;
+    } catch (const OEDESALT::OEDesaltError& e) {
+        PyErr_SetString(_oedesalt_py_OEDesaltError, e.what());
+        SWIG_fail;
     } catch (const std::exception& e) {
         SWIG_exception(SWIG_RuntimeError, e.what());
     } catch (...) {
@@ -379,15 +415,57 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oedesalt_is_oereceptor, "E
 // ============================================================================
 // Wrapped API
 // ============================================================================
-namespace OEDESALT {
+// Ignore raw types Python does not use directly. Desalt() returns a
+// DesaltResult by value (holds an OEGraphMol that cannot be safely handed back
+// across the SWIG runtime boundary), so it is ignored in favor of the
+// fill-in-place DesaltInto() helper below. SaltPattern holds an OESubSearch,
+// which has no cross-runtime typemap. The vector<SaltPattern> constructor is
+// also ignored — Python builds Desalters only through the static factories
+// (WithBundledPatterns / FromFiles), so exposing a constructor over an ignored
+// element type would produce an unusable wrapper.
+%ignore OEDESALT::SaltPattern;
+%ignore OEDESALT::DesaltResult;
+%ignore OEDESALT::load_salt_patterns;
+%ignore OEDESALT::Desalter::Desalt;
+%ignore OEDESALT::Desalter::Desalter(std::vector<OEDESALT::SaltPattern>, bool);
 
-double calculate_molecular_weight(const OEChem::OEMolBase& mol);
+%include "../include/oedesalt/Desalter.h"
 
-} // namespace OEDESALT
+// Fill-in-place desalt: Python allocates `out`, C++ writes the surviving
+// molecule into it, and the stripped-pattern names are returned. This is the
+// proven cross-runtime idiom (a molecule pointer extracted from a Python
+// openeye.oechem object is an internal OEMolBase, not an OEGraphMol handle, so
+// returning a molecule is unsafe).
+%extend OEDESALT::Desalter {
+    std::vector<std::string> DesaltInto(const OEChem::OEMolBase& mol,
+                                        OEChem::OEMolBase& out) const {
+        OEDESALT::DesaltResult result = $self->Desalt(mol);
+        out.Clear();
+        OEChem::OEAddMols(out, result.mol);
+        out.SetTitle(result.mol.GetTitle());
+        return result.stripped_names;
+    }
+}
 
 // ============================================================================
 // Module-level Python convenience code
 // ============================================================================
 %pythoncode %{
 __version__ = "0.1.0"
+
+
+class OEDesaltError(Exception):
+    """Base class for all oedesalt exceptions."""
+
+
+class PatternFileError(OEDesaltError):
+    """Raised when a salt/solvent pattern file cannot be opened."""
+
+
+class InvalidPatternError(OEDesaltError):
+    """Raised when a SMARTS line in a pattern file fails to parse."""
+
+
+# Register the classes so the C++ %exception handler raises them by type.
+_install_exception_types(OEDesaltError, PatternFileError, InvalidPatternError)
 %}

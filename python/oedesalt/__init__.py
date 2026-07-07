@@ -557,11 +557,16 @@ _load_cached_extension_if_needed()
 _check_openeye_version()
 
 from .oedesalt import (
-    calculate_molecular_weight,
+    Desalter as _RawDesalter,
+    OEDesaltError,
+    PatternFileError,
+    InvalidPatternError,
 )
 
 __all__ = [
     "__version__",
     "__version_info__",
-    "calculate_molecular_weight",
+    "OEDesaltError",
+    "PatternFileError",
+    "InvalidPatternError",
 ]
