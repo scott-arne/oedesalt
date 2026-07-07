@@ -38,6 +38,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(cmake_openeye)
 list(APPEND CMAKE_MODULE_PATH "${cmake_openeye_SOURCE_DIR}")
 
+# The interpreter is always needed for the embedded-pattern codegen step.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 if(OEDESALT_BUILD_PYTHON)
     find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
     find_package(SWIG 4.0)
@@ -51,7 +54,7 @@ find_package(OpenEye REQUIRED)
 
 # Library
 set(OEDESALT_SOURCES
-    src/oedesalt.cpp
+    src/Desalter.cpp
 )
 
 add_library(oedesalt ${OEDESALT_SOURCES})

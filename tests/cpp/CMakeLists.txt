@@ -9,7 +9,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 add_executable(oedesalt_tests
-    test_oedesalt.cpp
+    test_desalter.cpp
 )
 
 target_link_libraries(oedesalt_tests
