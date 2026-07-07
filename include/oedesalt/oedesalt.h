@@ -4,7 +4,7 @@
 // Version information
 #define OEDESALT_VERSION_MAJOR 0
 #define OEDESALT_VERSION_MINOR 1
-#define OEDESALT_VERSION_PATCH 0
+#define OEDESALT_VERSION_PATCH 1
 
 #include "oedesalt/Error.h"
 #include "oedesalt/Desalter.h"
