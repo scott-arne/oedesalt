@@ -1,5 +1,6 @@
 #include "oedesalt/Desalter.h"
 
+#include "oedesalt/BundledPatterns.h"
 #include "oedesalt/Error.h"
 
 #include <fstream>
@@ -61,6 +62,12 @@ std::vector<SaltPattern> parse_salt_patterns(std::istream& input, const std::str
     return patterns;
 }
 
+// Parse compiled patterns from an in-memory SMARTS string.
+std::vector<SaltPattern> parse_salt_patterns_string(const std::string& text, const std::string& source_label) {
+    std::istringstream input(text);
+    return parse_salt_patterns(input, source_label);
+}
+
 }  // namespace
 
 std::vector<SaltPattern> load_salt_patterns(const std::string& path) {
@@ -89,9 +96,17 @@ Desalter Desalter::FromFiles(
     return Desalter(std::move(patterns), aggressive);
 }
 
-// NOTE: replaced in Task 2 with the embedded-pattern implementation.
-Desalter Desalter::WithBundledPatterns(bool /*strip_solvents*/, bool /*aggressive*/) {
-    throw OEDesaltError("WithBundledPatterns not yet implemented");
+Desalter Desalter::WithBundledPatterns(bool strip_solvents, bool aggressive) {
+    std::vector<SaltPattern> patterns =
+        parse_salt_patterns_string(detail::kBundledSalts, "<bundled salts>");
+    if (strip_solvents) {
+        std::vector<SaltPattern> solvents =
+            parse_salt_patterns_string(detail::kBundledSolvents, "<bundled solvents>");
+        for (SaltPattern& solvent : solvents) {
+            patterns.push_back(std::move(solvent));
+        }
+    }
+    return Desalter(std::move(patterns), aggressive);
 }
 
 std::size_t Desalter::PatternCount() const {

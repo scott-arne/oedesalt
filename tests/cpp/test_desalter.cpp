@@ -192,5 +192,33 @@ TEST(Desalter, PreservesTitleAcrossDesalting) {
     EXPECT_EQ(result3.mol.GetTitle(), std::string("salt_only"));
 }
 
+TEST(BundledPatterns, LoadsNonEmptySaltSet) {
+    const auto desalter = Desalter::WithBundledPatterns();
+    EXPECT_GT(desalter.PatternCount(), 0u);
+    EXPECT_FALSE(desalter.IsAggressive());
+}
+
+TEST(BundledPatterns, StripsKnownCounterionWithoutAnyFile) {
+    // Bundled defaults must desalt aspirin . HCl to aspirin, with no file I/O.
+    const auto desalter = Desalter::WithBundledPatterns();
+    const auto result = desalter.Desalt(MolFromSmiles("CC(=O)Oc1ccccc1C(=O)O.Cl"));
+    EXPECT_EQ(CanonicalSmiles(result.mol), CanonicalSmiles(MolFromSmiles("CC(=O)Oc1ccccc1C(=O)O")));
+    ASSERT_EQ(result.stripped_names.size(), 1u);
+    EXPECT_EQ(result.stripped_names[0], "Halides");
+}
+
+TEST(BundledPatterns, SolventsAddMorePatternsWhenEnabled) {
+    const auto salts_only = Desalter::WithBundledPatterns(/*strip_solvents=*/false);
+    const auto with_solvents = Desalter::WithBundledPatterns(/*strip_solvents=*/true);
+    EXPECT_GT(with_solvents.PatternCount(), salts_only.PatternCount());
+}
+
+TEST(BundledPatterns, SolventsOffByDefaultKeepsWater) {
+    // drug . water — bundled salts alone must leave the water component intact.
+    const auto salts_only = Desalter::WithBundledPatterns(/*strip_solvents=*/false);
+    const auto result = salts_only.Desalt(MolFromSmiles("c1ccncc1C(=O)NC.O"));
+    EXPECT_NE(CanonicalSmiles(result.mol).find('.'), std::string::npos);
+}
+
 }  // namespace test
 }  // namespace OEDESALT

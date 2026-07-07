@@ -53,8 +53,34 @@ endif()
 find_package(OpenEye REQUIRED)
 
 # Library
+# Embed the default salt/solvent SMARTS into the library at build time. The
+# .smarts files are the single source of truth; this generates a .cpp of raw
+# string literals that WithBundledPatterns() parses. Regenerates when a data
+# file (or the generator) changes.
+set(OEDESALT_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+set(OEDESALT_BUNDLED_PATTERNS_CPP ${OEDESALT_GENERATED_DIR}/bundled_patterns.cpp)
+set(OEDESALT_SALTS_SMARTS ${CMAKE_CURRENT_SOURCE_DIR}/python/oedesalt/data/salts.smarts)
+set(OEDESALT_SOLVENTS_SMARTS ${CMAKE_CURRENT_SOURCE_DIR}/python/oedesalt/data/solvents.smarts)
+
+add_custom_command(
+    OUTPUT ${OEDESALT_BUNDLED_PATTERNS_CPP}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${OEDESALT_GENERATED_DIR}
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_bundled_patterns.py
+            --salts ${OEDESALT_SALTS_SMARTS}
+            --solvents ${OEDESALT_SOLVENTS_SMARTS}
+            --output ${OEDESALT_BUNDLED_PATTERNS_CPP}
+    DEPENDS
+        ${OEDESALT_SALTS_SMARTS}
+        ${OEDESALT_SOLVENTS_SMARTS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate_bundled_patterns.py
+    COMMENT "Generating embedded salt/solvent patterns"
+    VERBATIM
+)
+
 set(OEDESALT_SOURCES
     src/Desalter.cpp
+    ${OEDESALT_BUNDLED_PATTERNS_CPP}
 )
 
 add_library(oedesalt ${OEDESALT_SOURCES})
