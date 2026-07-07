@@ -7,7 +7,6 @@
 #include "oedesalt/Desalter.h"
 #include "oedesalt/Error.h"
 #include <oechem.h>
-#include <oegrid.h>
 
 using namespace OEDESALT;
 
@@ -80,7 +79,6 @@ namespace OEPlatform {
 }
 
 namespace OESystem {
-    class OEScalarGrid;
     class OERecord;
     class OEMolRecord;
 }
@@ -176,49 +174,10 @@ DEFINE_OE_TYPE_CHECKER(oehierchain,  "openeye.oechem", "OEHierChain")
 DEFINE_OE_TYPE_CHECKER(oeinteractionhint,          "openeye.oechem", "OEInteractionHint")
 DEFINE_OE_TYPE_CHECKER(oeinteractionhintcontainer, "openeye.oechem", "OEInteractionHintContainer")
 
-// ---- Grid (openeye.oegrid) ----
-DEFINE_OE_TYPE_CHECKER(oescalargrid, "openeye.oegrid", "OEScalarGrid")
-
 // ---- Docking (openeye.oedocking) ----
 DEFINE_OE_TYPE_CHECKER(oereceptor,   "openeye.oedocking", "OEReceptor")
 
 #undef DEFINE_OE_TYPE_CHECKER
-
-// ---- OEScalarGrid return-type helper (zero-copy pointer swap) ----
-static PyObject* _oedesalt_wrap_as_oe_grid(OESystem::OEScalarGrid* grid) {
-    if (!grid) {
-        Py_RETURN_NONE;
-    }
-    PyObject* oegrid_mod = PyImport_ImportModule("openeye.oegrid");
-    if (!oegrid_mod) {
-        delete grid;
-        return NULL;
-    }
-    PyObject* grid_cls = PyObject_GetAttrString(oegrid_mod, "OEScalarGrid");
-    Py_DECREF(oegrid_mod);
-    if (!grid_cls) {
-        delete grid;
-        return NULL;
-    }
-    PyObject* oe_grid = PyObject_CallNoArgs(grid_cls);
-    Py_DECREF(grid_cls);
-    if (!oe_grid) {
-        delete grid;
-        return NULL;
-    }
-    PyObject* thisAttr = PyObject_GetAttrString(oe_grid, "this");
-    if (!thisAttr) {
-        PyErr_Clear();
-        Py_DECREF(oe_grid);
-        delete grid;
-        return NULL;
-    }
-    _SwigPyObjectCompat* swig_this = (_SwigPyObjectCompat*)thisAttr;
-    delete reinterpret_cast<OESystem::OEScalarGrid*>(swig_this->ptr);
-    swig_this->ptr = grid;
-    Py_DECREF(thisAttr);
-    return oe_grid;
-}
 %}
 
 // ============================================================================
@@ -360,16 +319,6 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEBio::OEHierChain,    _oedesalt_is_oehierchain,  
 OE_CROSS_RUNTIME_REF_TYPEMAPS(OEBio::OEInteractionHint,          _oedesalt_is_oeinteractionhint,          "Expected OEInteractionHint object.")
 OE_CROSS_RUNTIME_REF_TYPEMAPS(OEBio::OEInteractionHintContainer, _oedesalt_is_oeinteractionhintcontainer, "Expected OEInteractionHintContainer object.")
 
-// ---- Grid (OESystem) ----
-OE_CROSS_RUNTIME_REF_TYPEMAPS(OESystem::OEScalarGrid, _oedesalt_is_oescalargrid, "Expected OEScalarGrid-derived object.")
-OE_CROSS_RUNTIME_NULLABLE_PTR_TYPEMAPS(OESystem::OEScalarGrid, _oedesalt_is_oescalargrid, "Expected OEScalarGrid or None.")
-
-// OEScalarGrid return-type typemap (wraps C++ grid as native openeye.oegrid object)
-%typemap(out) OESystem::OEScalarGrid* {
-    $result = _oedesalt_wrap_as_oe_grid($1);
-    if (!$result) SWIG_fail;
-}
-
 // ---- Docking (OEDocking) ----
 OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oedesalt_is_oereceptor, "Expected OEReceptor object.")
 
@@ -419,15 +368,18 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oedesalt_is_oereceptor, "E
 // DesaltResult by value (holds an OEGraphMol that cannot be safely handed back
 // across the SWIG runtime boundary), so it is ignored in favor of the
 // fill-in-place DesaltInto() helper below. SaltPattern holds an OESubSearch,
-// which has no cross-runtime typemap. The vector<SaltPattern> constructor is
-// also ignored — Python builds Desalters only through the static factories
-// (WithBundledPatterns / FromFiles), so exposing a constructor over an ignored
-// element type would produce an unusable wrapper.
+// which has no cross-runtime typemap. Every Desalter constructor is ignored —
+// Python builds Desalters only through the static factories (WithBundledPatterns
+// / FromFiles), and the sole public constructor takes a vector<SaltPattern>,
+// whose element type is ignored, so exposing it would produce an unusable
+// wrapper. A broad constructor %ignore is used because the signature-specific
+// form does not match SWIG's generated overload and leaves the constructor
+// exposed in the proxy.
 %ignore OEDESALT::SaltPattern;
 %ignore OEDESALT::DesaltResult;
 %ignore OEDESALT::load_salt_patterns;
 %ignore OEDESALT::Desalter::Desalt;
-%ignore OEDESALT::Desalter::Desalter(std::vector<OEDESALT::SaltPattern>, bool);
+%ignore OEDESALT::Desalter::Desalter;
 
 %include "../include/oedesalt/Desalter.h"
 

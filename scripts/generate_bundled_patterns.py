@@ -27,7 +27,9 @@ def _emit_raw_literal(text: str) -> str:
             f"error: raw-string delimiter ')({_DELIM}\"' found in embedded content; "
             "choose a different delimiter in generate_bundled_patterns.py"
         )
-    return f'R"{_DELIM}(\n{text}\n){_DELIM}"'
+    # No surrounding newlines: the embedded string must be byte-identical to the
+    # source file so parser line numbers in InvalidPatternError match the file.
+    return f'R"{_DELIM}({text}){_DELIM}"'
 
 
 def main() -> int:
