@@ -78,23 +78,56 @@ pytest tests/python/ -v
 ```
 
 The Python tests verify that molecules created with `openeye.oechem.OEGraphMol`
-pass correctly to the C++ `calculate_molecular_weight` function.
+pass correctly to the C++ API.
 
 ## Usage
 
 ```python
 from openeye import oechem
-from oedesalt import calculate_molecular_weight
+from oedesalt import Desalter
+
+# A bare Desalter() uses the salt patterns compiled into the library —
+# no data files needed. Solvent stripping is opt-in.
+desalter = Desalter()
 
 mol = oechem.OEGraphMol()
-oechem.OESmilesToMol(mol, "CC(=O)OC1=CC=CC=C1C(=O)O")  # aspirin
+oechem.OESmilesToMol(mol, "CC(=O)Oc1ccccc1C(=O)O.Cl")  # aspirin . HCl
 
-mw = calculate_molecular_weight(mol)
-print(f"Molecular weight: {mw:.2f}")  # 180.16
+result = desalter.desalt(mol)
+print(oechem.OEMolToSmiles(result.mol))   # aspirin, counterion removed
+print(result.stripped_names)              # ['Halides']
 ```
 
-The `OEGraphMol` object passes directly from Python to C++ via cross-runtime
-SWIG typemaps. No SMILES round-trip or manual pointer handling is needed.
+`Desalter` is immutable — configure it once in the constructor:
+
+```python
+Desalter()                          # bundled salts, solvents off (default)
+Desalter(strip_solvents=True)       # also strip bundled solvents (water, etc.)
+Desalter(aggressive=True)           # strip salt-formers from single-component inputs too
+Desalter(salt_file="my_salts.smarts")               # custom salt patterns
+Desalter(salt_file="my.smarts", solvent_file="s.smarts")  # custom both
+```
+
+`desalt(mol)` returns a `DesaltResult` with `.mol` (the surviving molecule,
+empty if everything matched) and `.stripped_names` (the patterns that removed a
+component). A single-component molecule is returned untouched unless
+`aggressive=True`, because a lone salt-former is the compound of interest, not a
+salt.
+
+Bad pattern files raise typed errors: `PatternFileError` (file cannot be opened)
+and `InvalidPatternError` (malformed SMARTS), both subclasses of `OEDesaltError`.
+
+### C++
+
+```cpp
+#include "oedesalt/Desalter.h"
+
+// Build from the patterns compiled into the library — no file needed.
+const OEDESALT::Desalter desalter = OEDESALT::Desalter::WithBundledPatterns();
+const OEDESALT::DesaltResult result = desalter.Desalt(mol);
+// result.mol            -> surviving molecule
+// result.stripped_names -> names of removed salt/solvent patterns
+```
 
 ## Project Structure
 
@@ -106,8 +139,11 @@ oedesalt/
     vrzn.toml                       # Version locations for vrzn
     include/oedesalt/
         oedesalt.h               # Public C++ header
+        Desalter.h               # Desalter class definition
+        Error.h                  # Error types (OEDesaltError, etc.)
+        BundledPatterns.h        # Embedded pattern constants
     src/
-        oedesalt.cpp             # C++ implementation
+        Desalter.cpp             # Desalter implementation
     swig/
         oedesalt.i               # SWIG interface with OEMolBase typemaps
         CMakeLists.txt              # SWIG module build rules
@@ -115,12 +151,16 @@ oedesalt/
         pyproject.toml              # Setuptools config for editable installs
         oedesalt/
             __init__.py             # Python package (imports, compat layer)
+            data/
+                salts.smarts        # Default salt patterns
+                solvents.smarts     # Default solvent patterns
     scripts/
         build_python.py             # Build distributable wheels
+        generate_bundled_patterns.py # Codegen: embeds SMARTS patterns in C++
     tests/
         cpp/
             CMakeLists.txt          # C++ test build rules
-            test_oedesalt.cpp     # C++ unit tests
+            test_desalter.cpp    # C++ unit tests
         python/
             conftest.py             # Pytest fixtures (molecule helpers)
             test_oedesalt.py      # Python tests
@@ -128,62 +168,22 @@ oedesalt/
         build-wheels.yml            # CI: multi-platform wheel builds
 ```
 
-## Adding New Functions
+## Salt & Solvent Patterns
 
-The scaffolded `calculate_molecular_weight` function demonstrates the pattern for
-wrapping C++ code that operates on OpenEye molecules. To add your own functions:
+The default patterns live in two RDKit-format SMARTS files:
 
-**1. Declare in the header** (`include/oedesalt/oedesalt.h`):
+- `python/oedesalt/data/salts.smarts` — counterions, salts, and salt-former bases.
+- `python/oedesalt/data/solvents.smarts` — crystallization solvents and water (opt-in).
 
-```cpp
-namespace OEDESALT {
+These files are the single source of truth. At build time,
+`scripts/generate_bundled_patterns.py` embeds them into the C++ library as
+string constants (reached via `Desalter::WithBundledPatterns`), and the same
+files are shipped in the wheel for the file-override code paths. Editing a
+`.smarts` file and rebuilding regenerates the embedded copy automatically.
 
-double my_function(const OEChem::OEMolBase& mol);
-
-} // namespace OEDESALT
-```
-
-**2. Implement** (`src/oedesalt.cpp` or a new `.cpp` file):
-
-```cpp
-namespace OEDESALT {
-
-double my_function(const OEChem::OEMolBase& mol) {
-    // Your implementation using OpenEye C++ API
-}
-
-} // namespace OEDESALT
-```
-
-If you add new `.cpp` files, add them to the `OEDESALT_SOURCES` list in
-`CMakeLists.txt`.
-
-**3. Expose in SWIG** (`swig/oedesalt.i`), under the "Wrapped API" section:
-
-```swig
-namespace OEDESALT {
-double my_function(const OEChem::OEMolBase& mol);
-}
-```
-
-Any function accepting `OEMolBase&` or `const OEMolBase&` will automatically use
-the cross-runtime typemaps.
-
-**4. Import in Python** (`python/oedesalt/__init__.py`):
-
-```python
-from .oedesalt import (
-    calculate_molecular_weight,
-    my_function,
-)
-```
-
-**5. Rebuild and test:**
-
-```bash
-cmake --build build-debug
-pytest tests/python/ -v
-```
+Each non-comment line is a SMARTS pattern followed by a display name; lines
+starting with `//` or `#` are comments. Patterns use a whole-fragment,
+charge-agnostic match, so do not encode formal charges.
 
 ## Building Wheels
 
