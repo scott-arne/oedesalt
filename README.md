@@ -41,7 +41,7 @@ print(result.stripped_names)              # ['Halides']
 
 - **OpenEye Toolkits** with a valid license (`OE_LICENSE`). The Python package
   depends on `openeye-toolkits`; the C++ library needs the OpenEye C++ SDK.
-- **Python** ≥ 3.10 (for the Python package).
+- **Python** ≥ 3.11 (for the Python package).
 - **C++17** and **CMake** ≥ 3.16 (for the C++ library).
 
 ## Python
