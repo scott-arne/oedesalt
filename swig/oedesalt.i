@@ -359,7 +359,7 @@ OE_CROSS_RUNTIME_REF_TYPEMAPS(OEDocking::OEReceptor, _oedesalt_is_oereceptor, "E
 // ============================================================================
 #define OEDESALT_VERSION_MAJOR 0
 #define OEDESALT_VERSION_MINOR 1
-#define OEDESALT_VERSION_PATCH 1
+#define OEDESALT_VERSION_PATCH 2
 
 // ============================================================================
 // Wrapped API
