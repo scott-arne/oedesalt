@@ -12,8 +12,8 @@ def test_version_available():
 
     assert hasattr(oedesalt, "__version__")
     assert hasattr(oedesalt, "__version_info__")
-    assert oedesalt.__version__ == "0.1.2"
-    assert oedesalt.__version_info__ == (0, 1, 2)
+    assert oedesalt.__version__ == "0.1.3"
+    assert oedesalt.__version_info__ == (0, 1, 3)
 
 
 def test_bare_desalter_strips_halide(aspirin_hcl_mol):
