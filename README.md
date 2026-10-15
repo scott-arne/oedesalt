@@ -43,6 +43,12 @@ print(result.stripped_names)              # ['Halides']
   depends on `openeye-toolkits`; the C++ library needs the OpenEye C++ SDK.
 - **Python** ≥ 3.11 (for the Python package).
 - **C++17** and **CMake** ≥ 3.16 (for the C++ library).
+- **SWIG** 4.4.1 or newer and **patchelf** on Linux (to build the Python package
+  from source). CI builds with SWIG 4.5.1 (`pip install swig==4.5.1`). SWIG
+  4.4.0, which Ubuntu 26.04 ships as `/usr/bin/swig`, generates stable-ABI
+  wrappers that do not compile against Python 3.13 or newer. patchelf lets
+  editable builds add the OpenEye library directories to the extension's RPATH;
+  without it the editable import fails with `cannot open shared object file`.
 
 ## Python
 
