@@ -1,0 +1,265 @@
+name: CI
+
+# build-wheels.yml packages releases and runs only on a v* tag or by hand, so
+# nothing built the project on an ordinary change, and nothing ran the C++
+# suite at all: the wheel build turns it off. This workflow covers what the
+# wheel jobs do not: the C++ library on its own, installed and consumed the way
+# a C++ user does it, and the preset-driven developer build on Linux.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref makes the older run pointless; stop it rather
+# than pay for it, particularly on the Windows runner.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GCS_BUCKET: openeye-sdks
+  # These pins must stay in step with build-wheels.yml. CI that builds a
+  # different toolchain from the release reports green for something nobody
+  # ships. Change them in both files together.
+  OPENEYE_VERSION: "2026.1.0"
+  SWIG_VERSION: "4.5.1"
+  PIP_DEFAULT_TIMEOUT: "60"
+  PIP_RETRIES: "10"
+
+jobs:
+
+  # The C++ library alone: static OpenEye SDK, no SWIG, no openeye-toolkits.
+  # After the suite passes, the install is linked by tests/consumer, which
+  # follows the README's "Consuming the library" section.
+  cpp-only:
+    name: cpp-only (${{ matrix.name }})
+
+    permissions:
+      contents: read
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The RHEL 8 SDK's static libraries call glibc symbols removed after
+          # 2.31, so they cannot link against ubuntu-latest's own glibc. Rocky 8
+          # is the SDK's target and the container the x86_64 wheel builds in.
+          - name: linux-x64
+            runner: ubuntu-latest
+            container: rockylinux:8
+            sdk_suffix: redhat-RHEL8-g++8.5-x64.tar.gz
+          - name: macos
+            runner: macos-latest
+            container: ''
+            sdk_suffix: macOS-14-clang++16-universal.tar.gz
+          - name: windows-x64
+            runner: windows-latest
+            container: ''
+            sdk_suffix: win-x64-MD.zip
+
+    runs-on: ${{ matrix.runner }}
+    # An empty image runs the job directly on the runner.
+    container: ${{ matrix.container }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Install prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          dnf install -y epel-release
+          dnf config-manager --set-enabled powertools
+          # python3.11 only runs the embedded-pattern generator; the build must
+          # not need SWIG or the openeye-toolkits package, so neither is here.
+          dnf install -y --allowerasing \
+            git curl tar gzip gcc gcc-c++ cmake make findutils \
+            python3.11 zlib-devel cairo
+
+      - uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Download OpenEye SDK from GCS
+        run: |
+          set -euo pipefail
+          # The env context is unavailable in strategy.matrix, so the archive
+          # name is composed here rather than spelled out in the matrix.
+          SDK="OpenEye-toolkits-${OPENEYE_VERSION}-${{ matrix.sdk_suffix }}"
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${GCS_BUCKET}/${SDK}" \
+            -o "${RUNNER_TEMP}/${SDK}"
+          case "${SDK}" in
+            *.zip)
+              unzip -q "${RUNNER_TEMP}/${SDK}" -d "${RUNNER_TEMP}/openeye-extract"
+              sdk_root=$(find "${RUNNER_TEMP}/openeye-extract" -maxdepth 1 -mindepth 1 -type d | head -n1)
+              ;;
+            *)
+              mkdir -p "${RUNNER_TEMP}/openeye"
+              tar -xzf "${RUNNER_TEMP}/${SDK}" -C "${RUNNER_TEMP}/openeye" --strip-components=2
+              sdk_root="${RUNNER_TEMP}/openeye"
+              ;;
+          esac
+          rm "${RUNNER_TEMP}/${SDK}"
+          prefix="${RUNNER_TEMP}/oedesalt-install"
+          # RUNNER_TEMP is a backslashed Windows path there; hand CMake forward
+          # slashes so no backslash is read as an escape.
+          if command -v cygpath >/dev/null; then
+            sdk_root=$(cygpath -m "${sdk_root}")
+            prefix=$(cygpath -m "${prefix}")
+          fi
+          echo "OPENEYE_ROOT=${sdk_root}" >> "$GITHUB_ENV"
+          echo "OEDESALT_PREFIX=${prefix}" >> "$GITHUB_ENV"
+          ls "${sdk_root}"
+
+      - name: Download OpenEye license from GCS
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${GCS_BUCKET}/oe_license.txt" \
+            -o "${RUNNER_TEMP}/oe_license.txt"
+          echo "OE_LICENSE=${RUNNER_TEMP}/oe_license.txt" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: |
+          # SWIG is ruled out rather than merely absent (macOS runners may have
+          # it), so a find_package(SWIG REQUIRED) that escapes the
+          # OEDESALT_BUILD_PYTHON guard fails here on every platform.
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOEDESALT_BUILD_PYTHON=OFF \
+            -DCMAKE_DISABLE_FIND_PACKAGE_SWIG=ON \
+            -DOPENEYE_ROOT="${OPENEYE_ROOT}"
+          # C++ consumers link the SDK's static libraries; a build that drifted
+          # to shared ones would pass here and fail for them.
+          grep -q '^OPENEYE_USE_SHARED:BOOL=OFF' build/CMakeCache.txt
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: C++ tests
+        # ctest exits 0 when no tests are registered; --no-tests=error makes a
+        # discovery regression fail instead of reporting green having run none.
+        run: ctest --test-dir build -C Release --output-on-failure --no-tests=error
+
+      - name: Install
+        run: |
+          set -euo pipefail
+          cmake --install build --config Release --prefix "${OEDESALT_PREFIX}"
+          test -f "${OEDESALT_PREFIX}/include/oedesalt/Desalter.h"
+          test -f "${OEDESALT_PREFIX}/lib/cmake/oedesalt/OEDESALTTargets.cmake"
+          if [ -e "${OEDESALT_PREFIX}/include/gtest" ] || [ -e "${OEDESALT_PREFIX}/lib/cmake/GTest" ]; then
+            echo "::error::the install put googletest in the prefix"
+            exit 1
+          fi
+
+      - name: Build and run a consumer of the install
+        run: |
+          cmake -S tests/consumer -B build-consumer \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DOEDESALT_PREFIX="${OEDESALT_PREFIX}" \
+            -DOPENEYE_ROOT="${OPENEYE_ROOT}"
+          cmake --build build-consumer --config Release
+          ctest --test-dir build-consumer -C Release --output-on-failure --no-tests=error
+
+  # The developer build on Linux, configured from CMakePresets.json the way a
+  # contributor does it: the extension links the openeye-toolkits shared
+  # libraries, and cmake-openeye uses patchelf to put their directory on the
+  # in-tree extension's RUNPATH. The wheel jobs set RPATHs their own way, so
+  # nothing else exercises this path.
+  linux-dev:
+
+    permissions:
+      contents: read
+      id-token: write
+
+    runs-on: ubuntu-latest
+    container: rockylinux:8
+
+    steps:
+      - name: Install prerequisites
+        run: |
+          dnf install -y epel-release
+          dnf config-manager --set-enabled powertools
+          dnf install -y --allowerasing \
+            git curl gcc gcc-c++ make binutils \
+            python3.11 python3.11-devel \
+            zlib-devel cairo findutils
+
+      - uses: actions/checkout@v6
+
+      - name: Setup Python environment
+        run: |
+          python3.11 -m venv /opt/venv
+          echo "/opt/venv/bin" >> "$GITHUB_PATH"
+          /opt/venv/bin/pip install --upgrade pip setuptools wheel
+          /opt/venv/bin/pip install cmake "swig==${{ env.SWIG_VERSION }}" patchelf pytest
+
+      - name: Authenticate to Google Cloud
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      - name: Download OpenEye SDK from GCS
+        run: |
+          mkdir -p /opt/openeye
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ env.GCS_BUCKET }}/OpenEye-toolkits-${{ env.OPENEYE_VERSION }}-redhat-RHEL8-g++8.5-x64.tar.gz" \
+            -o /tmp/sdk.tar.gz
+          tar -xzf /tmp/sdk.tar.gz -C /opt/openeye --strip-components=2
+          rm /tmp/sdk.tar.gz
+
+      - name: Download OpenEye license from GCS
+        run: |
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ steps.gcp-auth.outputs.access_token }}" \
+            "https://storage.googleapis.com/${{ env.GCS_BUCKET }}/oe_license.txt" \
+            -o /opt/openeye/oe_license.txt
+          echo "OE_LICENSE=/opt/openeye/oe_license.txt" >> "$GITHUB_ENV"
+
+      - name: Install openeye-toolkits Python package
+        run: |
+          /opt/venv/bin/pip install openeye-toolkits==${{ env.OPENEYE_VERSION }} \
+            --extra-index-url https://pypi.anaconda.org/openeye/simple \
+            --no-cache-dir
+          /opt/venv/bin/python -c "from openeye import oechem; print('OpenEye version:', oechem.OEToolkitsGetRelease())"
+
+      - name: Configure from the release preset
+        env:
+          OPENEYE_ROOT: /opt/openeye
+          Python3_EXECUTABLE: /opt/venv/bin/python
+        run: |
+          cmake --preset release
+          # The preset is what selects shared linking and the pinned SWIG is
+          # what must be found; assert both rather than testing something else.
+          grep -q '^OPENEYE_USE_SHARED:BOOL=ON' build-release/CMakeCache.txt
+          grep -q "^SWIG_VERSION:STRING=${SWIG_VERSION}\$" build-release/CMakeCache.txt
+
+      - name: Build
+        run: cmake --build --preset release --parallel
+
+      - name: C++ tests
+        run: ctest --test-dir build-release --output-on-failure --no-tests=error
+
+      # No LD_LIBRARY_PATH, deliberately: the import has to find the OpenEye
+      # libraries through the RUNPATH patchelf added, as it does for a
+      # developer. Exporting the directory would pass with or without it.
+      - name: Python tests
+        run: |
+          readelf -d python/oedesalt/_oedesalt*.so | grep -E 'R(UN)?PATH'
+          /opt/venv/bin/pip install --no-deps -e python
+          /opt/venv/bin/python -m pytest tests/python
