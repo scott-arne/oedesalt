@@ -4,6 +4,16 @@ if(POLICY CMP0144)
     cmake_policy(SET CMP0144 NEW)
 endif()
 
+# OpenEye 2026.1's libraries, static and shared, are built for macOS 14.0, so
+# nothing linked against them runs on an older macOS. This has to precede
+# project(), which otherwise caches an empty value and makes a later default a
+# no-op; the build then targets whatever macOS it runs on. An explicit
+# -DCMAKE_OSX_DEPLOYMENT_TARGET or MACOSX_DEPLOYMENT_TARGET still wins.
+if(CMAKE_HOST_APPLE AND NOT DEFINED CMAKE_OSX_DEPLOYMENT_TARGET
+        AND NOT DEFINED ENV{MACOSX_DEPLOYMENT_TARGET})
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version")
+endif()
+
 project(oedesalt VERSION 0.1.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -18,12 +28,11 @@ option(OEDESALT_USE_STABLE_ABI "Use Python stable ABI" ON)
 
 if(APPLE AND OEDESALT_UNIVERSAL2)
     set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "Build architectures" FORCE)
-elseif(APPLE)
+elseif(APPLE AND NOT SKBUILD)
+    # scikit-build-core turns ARCHFLAGS into CMAKE_OSX_ARCHITECTURES and tags the
+    # wheel to match, so clearing it would put a single-architecture extension
+    # in a wheel tagged universal2.
     unset(CMAKE_OSX_ARCHITECTURES CACHE)
-endif()
-
-if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 
 # Dependencies

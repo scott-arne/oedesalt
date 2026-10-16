@@ -207,6 +207,13 @@ jobs:
       id-token: write
 
     runs-on: macos-latest
+    env:
+      # Without these, scikit-build-core builds for and tags the runner's own
+      # macOS version and architecture (macosx_26_0_arm64), which no Intel Mac
+      # and no Mac older than the runner can install. OpenEye 2026.1's libraries
+      # are universal and need macOS 14.0, so the wheel matches them.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      ARCHFLAGS: "-arch arm64 -arch x86_64"
 
     steps:
       - uses: actions/checkout@v6
@@ -497,6 +504,13 @@ jobs:
           - os: macos-latest
             python: '3.14'
             wheel_glob: dist/oedesalt-*macosx*.whl
+          # The macOS wheel is universal2, and the build job only imports its
+          # arm64 slice. An x86_64 interpreter runs under Rosetta and loads the
+          # x86_64 slice, which is what an Intel Mac would get.
+          - os: macos-latest
+            python: '3.14'
+            arch: x64
+            wheel_glob: dist/oedesalt-*macosx*.whl
           - os: windows-latest
             python: '3.14'
             wheel_glob: dist/oedesalt-*win_amd64.whl
@@ -512,6 +526,7 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.arch }}
 
       - name: Import wheel under Python ${{ matrix.python }}
         shell: bash
@@ -523,7 +538,7 @@ jobs:
           WHEEL=$(ls ${{ matrix.wheel_glob }})
           echo "Installing $WHEEL"
           pip install "$WHEEL"
-          python -c "import oedesalt, sys; print('oedesalt', getattr(oedesalt, '__version__', ''), 'imported under', sys.version)"
+          python -c "import oedesalt, platform, sys; print('oedesalt', getattr(oedesalt, '__version__', ''), 'imported under', sys.version, 'on', platform.machine())"
 
   # Publish to PyPI on release tags
   publish:
