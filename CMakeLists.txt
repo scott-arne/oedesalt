@@ -128,17 +128,21 @@ if(OEDESALT_BUILD_PYTHON AND SWIG_FOUND)
     add_subdirectory(swig)
 endif()
 
-# Install
-install(TARGETS oedesalt
-    EXPORT oedesalt-targets
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-)
+# Install the C++ library for C++ consumers. A wheel build installs into the
+# wheel root, so these would land in site-packages as top-level include/ and
+# lib/ directories, with a targets file naming an archive the wheel excludes.
+if(NOT SKBUILD)
+    install(TARGETS oedesalt
+        EXPORT oedesalt-targets
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib
+    )
 
-install(DIRECTORY include/oedesalt DESTINATION include)
+    install(DIRECTORY include/oedesalt DESTINATION include)
 
-install(EXPORT oedesalt-targets
-    FILE OEDESALTTargets.cmake
-    NAMESPACE OEDESALT::
-    DESTINATION lib/cmake/oedesalt
-)
+    install(EXPORT oedesalt-targets
+        FILE OEDESALTTargets.cmake
+        NAMESPACE OEDESALT::
+        DESTINATION lib/cmake/oedesalt
+    )
+endif()

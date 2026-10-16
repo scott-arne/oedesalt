@@ -45,7 +45,9 @@ wheel.install-dir = "."
 logging.level = "INFO"
 strict-config = false
 wheel.py-api = "cp310"
-wheel.exclude = ["**.pyc", "**/__pycache__", "*.a", "CMakeFiles/**"]
+# *.a and *.lib are the static oedesalt library (Unix and Windows), which
+# cmake-openeye copies next to the extension and installs; nothing loads it.
+wheel.exclude = ["**.pyc", "**/__pycache__", "*.a", "*.lib", "CMakeFiles/**"]
 
 [tool.scikit-build.cmake.define]
 OEDESALT_BUILD_TESTS = "OFF"
