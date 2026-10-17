@@ -505,11 +505,14 @@ jobs:
             python: '3.14'
             wheel_glob: dist/oedesalt-*macosx*.whl
           # The macOS wheel is universal2, and the build job only imports its
-          # arm64 slice. An x86_64 interpreter runs under Rosetta and loads the
-          # x86_64 slice, which is what an Intel Mac would get.
+          # arm64 slice. Running the interpreter under Rosetta loads the x86_64
+          # slice, which is what an Intel Mac would get. setup-python's
+          # `architecture: x64` does not do this on Apple Silicon: it installs
+          # python.org's universal2 build, which runs as arm64.
           - os: macos-latest
             python: '3.14'
-            arch: x64
+            run_prefix: arch -x86_64
+            machine: x86_64
             wheel_glob: dist/oedesalt-*macosx*.whl
           - os: windows-latest
             python: '3.14'
@@ -526,19 +529,29 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
-          architecture: ${{ matrix.arch }}
 
       - name: Import wheel under Python ${{ matrix.python }}
         shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install "openeye-toolkits==${{ env.OPENEYE_VERSION }}" \
+          set -euo pipefail
+          read -ra PY <<< "${{ matrix.run_prefix }} python"
+          "${PY[@]}" -m pip install --upgrade pip
+          "${PY[@]}" -m pip install "openeye-toolkits==${{ env.OPENEYE_VERSION }}" \
             --extra-index-url https://pypi.anaconda.org/openeye/simple \
             --no-cache-dir
           WHEEL=$(ls ${{ matrix.wheel_glob }})
           echo "Installing $WHEEL"
-          pip install "$WHEEL"
-          python -c "import oedesalt, platform, sys; print('oedesalt', getattr(oedesalt, '__version__', ''), 'imported under', sys.version, 'on', platform.machine())"
+          "${PY[@]}" -m pip install "$WHEEL"
+          "${PY[@]}" -c "import oedesalt, platform, sys; print('oedesalt', getattr(oedesalt, '__version__', ''), 'imported under', sys.version, 'on', platform.machine())"
+          # A check that silently ran on the wrong architecture would pass
+          # without testing what it claims to.
+          if [ -n "${{ matrix.machine }}" ]; then
+            machine=$("${PY[@]}" -c "import platform; print(platform.machine())")
+            if [ "$machine" != "${{ matrix.machine }}" ]; then
+              echo "::error::imported on $machine, expected ${{ matrix.machine }}"
+              exit 1
+            fi
+          fi
 
   # Publish to PyPI on release tags
   publish:
